@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 
 class OverrideModal(QDialog):
-    def __init__(self, doc_image: np.ndarray, parent=None):
+    def __init__(self, doc_image: np.ndarray, parent=None, prefill_id=None):
         super().__init__(parent)
         self.setWindowTitle("Manual Data Entry | Security Override")
         self.setMinimumSize(1200, 800) # Increased to 80% screen width as requested
@@ -60,6 +60,8 @@ class OverrideModal(QDialog):
         self.input_field.setStyleSheet("font-family: 'Fira Code', 'Consolas', monospace; font-size: 28px; padding: 15px; border-radius: 8px;")
         self.input_field.setAlignment(Qt.AlignCenter)
         self.input_field.setMaxLength(15)
+        if prefill_id:
+            self.input_field.setText(str(prefill_id))
         right_layout.addWidget(self.input_field)
         
         right_layout.addSpacing(30)

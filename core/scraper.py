@@ -2,71 +2,100 @@ from PySide6.QtCore import QThread, Signal
 from playwright.sync_api import sync_playwright
 import numpy as np
 import cv2
+import queue
+import os
+import traceback
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 class ScraperThread(QThread):
     finished = Signal(np.ndarray)  # Emits the screenshot as CV2 array
     error_occurred = Signal(str)
+    ready = Signal()               # Emitted when login is complete
 
-    def __init__(self, url, timeout_sec=15):
+    def __init__(self, timeout_sec=15):
         super().__init__()
-        self.url = url
         self.timeout_sec = timeout_sec
+        self.cmd_queue = queue.Queue()
+        self._is_running = True
 
     def run(self):
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                # Use a massive viewport so internal scrolling containers (like in Google Drive or job3)
-                # are fully expanded natively, capturing up to ~3 A4 pages consistently.
-                context = browser.new_context(viewport={"width": 1280, "height": 3000})
+                # Ensure the viewport is large enough to capture the ID card layout
+                context = browser.new_context(viewport={"width": 1280, "height": 1080})
                 page = context.new_page()
                 
-                # Navigate and wait until network is idle
-                response = page.goto(self.url, timeout=self.timeout_sec * 1000)
+                # 1. Login Phase
+                login_url = "https://job3.ocsc.go.th/OCSRegisterWeb/checkphoto"
+                page.goto(login_url, timeout=self.timeout_sec * 1000)
                 
-                # Check for URL Shortener Ads / Redirects (e.g. q.me, meqr)
-                import re
-                original_url = self.url.lower()
-                if "q.me" in original_url or "short" in original_url or "qr" in original_url:
-                    # Wait up to 10 seconds for ad redirects or clicking "Skip"
-                    for _ in range(10):
-                        current_url = page.url.lower()
-                        # If reached the real site (e.g. job3.ocsc.go.th) or a PDF file
-                        if "job3.ocsc.go.th" in current_url or current_url.endswith(".pdf"):
+                user = os.environ.get("OCSC_USER", "eexamphoto")
+                pw = os.environ.get("OCSC_PASS", "zLc3R/IZNfapHG5Idk2T3A==")
+                
+                page.get_by_placeholder("กรุณาระบุชื่อผู้ใช้").fill(user)
+                page.locator("input[formcontrolname='password']").fill(pw)
+                page.get_by_role("button", name="เข้าสู่ระบบ").click()
+                
+                # Wait for search box to ensure login succeeded
+                search_box = page.get_by_placeholder("เลขประจำตัวประชาชน")
+                search_box.wait_for(state="visible", timeout=self.timeout_sec * 1000)
+                
+                self.ready.emit()
+
+                # 2. Main Event Loop
+                while self._is_running:
+                    try:
+                        national_id = self.cmd_queue.get(timeout=1.0)
+                        if national_id is None: # Exit signal
                             break
                         
-                        try:
-                            # Aggressive search for any element containing Skip/Continue/ข้าม
-                            skip_pattern = re.compile(r"skip|continue|ข้าม|ไปต่อ", re.IGNORECASE)
-                            elements = page.get_by_text(skip_pattern).all()
-                            for el in elements:
-                                if el.is_visible():
-                                    el.click(timeout=500, force=True)
-                        except Exception:
-                            pass
+                        self._process_search(page, national_id)
                         
-                        page.wait_for_timeout(1000)
-                
-                # Wait for final destination to fully load
-                page.wait_for_load_state("networkidle", timeout=self.timeout_sec * 1000)
-                
-                if response is None or not response.ok:
-                    status = response.status if response else "Unknown"
-                    self.error_occurred.emit(f"Failed to load URL (Status: {status})")
-                    browser.close()
-                    return
-
-                # Capture full page screenshot
-                # Because the viewport height is 3000px, it captures almost everything natively
-                # without needing CSS hacks for nested scrolling divs!
-                screenshot_bytes = page.screenshot(full_page=True, type="jpeg")
+                    except queue.Empty:
+                        continue
+                        
                 browser.close()
-
-                # Convert to numpy array for OpenCV
-                nparr = np.frombuffer(screenshot_bytes, np.uint8)
-                img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                
-                self.finished.emit(img)
                 
         except Exception as e:
+            traceback.print_exc()
             self.error_occurred.emit(f"Scraper error: {str(e)}")
+            
+    def _process_search(self, page, national_id):
+        try:
+            search_box = page.get_by_placeholder("เลขประจำตัวประชาชน")
+            search_box.fill(national_id)
+            
+            # Click search button
+            page.locator("button:has-text('ค้นหา')").click()
+            
+            # Since Angular/SPA might not always trigger full networkidle,
+            # we also do a small manual wait and wait for specific DOM mutations if possible.
+            page.wait_for_load_state("networkidle", timeout=self.timeout_sec * 1000)
+            page.wait_for_timeout(1500)  # Extra buffer to ensure UI rendered completely
+            
+            # Capture viewport for the result
+            # We don't do full_page=True because the result might just be neatly inside the viewport
+            screenshot_bytes = page.screenshot(full_page=False, type="jpeg")
+            
+            nparr = np.frombuffer(screenshot_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            self.finished.emit(img)
+            
+        except Exception as e:
+            traceback.print_exc()
+            self.error_occurred.emit(f"Search failed: {str(e)}")
+
+    def search_national_id(self, national_id):
+        """Called safely from main thread to enqueue a search command"""
+        self.cmd_queue.put(national_id)
+
+    def stop(self):
+        """Called to gracefully shut down the thread"""
+        self._is_running = False
+        self.cmd_queue.put(None)
+        self.wait()
