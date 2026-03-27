@@ -190,6 +190,11 @@ class MainWindow(QMainWindow):
         self.clock_label.setText(datetime.now().strftime("%H:%M:%S"))
 
     def check_system_status(self):
+        if not getattr(self, "scraper_ready", False):
+            self.ind_scan.setText("🟡 Scanner: Initializing...")
+            self.ind_scan.setStyleSheet("font-weight: bold; color: #f59e0b;")
+            return
+
         # Scanner Focus
         if self.qr_input.hasFocus():
             self.ind_scan.setText("🟢 Scanner: Ready")
@@ -215,6 +220,9 @@ class MainWindow(QMainWindow):
     def start_camera(self):
         if self.camera_thread:
             self.camera_thread.stop()
+        if self.scraper_thread:
+            self.scraper_thread.stop()
+
         self.config = load_config()
         idx = self.config.get("camera_index", 0)
         self.camera_thread = CameraThread(camera_index=idx)
@@ -222,10 +230,26 @@ class MainWindow(QMainWindow):
         self.camera_thread.error_occurred.connect(self.on_camera_error)
         self.camera_thread.start()
         
+        self.scraper_ready = False
+        self.set_status("Initializing OCSC session... (Logging in)", "#f59e0b")
+        self.ind_scan.setText("🟡 Scanner: Initializing...")
+        self.ind_scan.setStyleSheet("font-weight: bold; color: #f59e0b;")
+        
+        timeout = self.config.get("scraper_timeout_sec", 15)
+        self.scraper_thread = ScraperThread(timeout_sec=timeout)
+        self.scraper_thread.ready.connect(self.on_scraper_ready)
+        self.scraper_thread.finished.connect(self.on_scraping_finished)
+        self.scraper_thread.error_occurred.connect(self.on_scraping_error)
+        self.scraper_thread.start()
+
         self.ind_cam.setText("🟢 Camera: Online")
         self.ind_cam.setStyleSheet("font-weight: bold; color: #4ade80;")
         self.qr_input.setEnabled(True)
-        self.set_status("Ready to Scan.", "#4ade80")
+
+    def on_scraper_ready(self):
+        self.scraper_ready = True
+        self.set_status("OCSC Scraper Ready. Scan to begin.", "#4ade80")
+        self.check_system_status()
 
     def update_video_frame(self, frame):
         display_frame = cv2.resize(frame, (960, 720))
@@ -248,30 +272,30 @@ class MainWindow(QMainWindow):
             self.storage.output_dir = self.config["output_dir"]
 
     def on_qr_scanned(self):
-        url = self.qr_input.text().strip()
+        national_id = self.qr_input.text().strip()
         self.qr_input.clear()
-        if not url: return
+        if not national_id: return
 
-        self.set_status("Uploading applicant face...", "#3b82f6")
+        if not getattr(self, "scraper_ready", False):
+            self.set_status("Scraper is still initializing. Please wait.", "#f59e0b")
+            return
+
+        self.current_national_id = national_id
+        self.set_status(f"Capturing face & Searching ID: {national_id}", "#3b82f6")
         self.current_face_frame = self.camera_thread.get_current_frame()
         if self.current_face_frame is None:
             self.set_status("Failed to capture face. Please try again.", "#ef4444")
             return
 
-        self.set_status("Fetching document from QR Code...", "#3b82f6")
         self.progress_bar.show()
-
-        self.scraper_thread = ScraperThread(url, timeout_sec=self.config.get("scraper_timeout_sec", 15))
-        self.scraper_thread.finished.connect(self.on_scraping_finished)
-        self.scraper_thread.error_occurred.connect(self.on_scraping_error)
-        self.scraper_thread.start()
+        self.scraper_thread.search_national_id(national_id)
 
     def on_scraping_finished(self, doc_image):
         self.progress_bar.hide()
         self.scraped_doc_image = doc_image
-        self.set_status("Document fetched successfully. Enter Exam ID.", "#f59e0b")
+        self.set_status("Document fetched successfully. Verify the Exam ID.", "#f59e0b")
         
-        dlg = OverrideModal(self.scraped_doc_image, self)
+        dlg = OverrideModal(self.scraped_doc_image, self, prefill_id=getattr(self, "current_national_id", None))
         if dlg.exec() and dlg.exam_id:
             self.save_final_files(dlg.exam_id)
         else:
@@ -318,4 +342,6 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         if self.camera_thread:
             self.camera_thread.stop()
+        if getattr(self, "scraper_thread", None):
+            self.scraper_thread.stop()
         super().closeEvent(event)

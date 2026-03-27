@@ -3,3 +3,4 @@ opencv-python
 playwright
 paddleocr
 paddlepaddle
+python-dotenv
