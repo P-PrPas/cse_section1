@@ -13,13 +13,14 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QTextEdit,
 )
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap, QTextCursor
 
 from core.camera import CameraThread
 from core.scraper import ScraperThread
 from core.storage import StorageManager
 from utils.config import load_config
+from utils.keyboard_layout import get_current_keyboard_language, toggle_keyboard_language
 from ui.settings_dialog import SettingsDialog
 from ui.override_modal import OverrideModal
 
@@ -41,14 +42,18 @@ class MainWindow(QMainWindow):
         self.history_logs = []
         self.scan_locked = False
         self.scan_lock_notice_shown = False
+        self.last_camera_frame_ts = time.monotonic()
+        self._keyboard_notice_shown = False
 
         self._init_ui()
-        self.start_camera()
+        self.start_services()
 
         # Timers
         self.focus_timer = QTimer(self)
         self.focus_timer.timeout.connect(self.check_system_status)
         self.focus_timer.start(500)
+
+        QTimer.singleShot(0, self.show_keyboard_language_notice)
 
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self.update_clock)
@@ -82,6 +87,12 @@ class MainWindow(QMainWindow):
             "font-size:18px; color:#cbd5e1; background-color: transparent; margin-right:15px;"
         )
         header_layout.addWidget(self.clock_label)
+
+        self.keyboard_button = QPushButton("Keyboard: --")
+        self.keyboard_button.setObjectName("SecondaryBtn")
+        self.keyboard_button.setCursor(Qt.PointingHandCursor)
+        self.keyboard_button.clicked.connect(self.toggle_keyboard_layout)
+        header_layout.addWidget(self.keyboard_button)
 
         settings_btn = QPushButton("Settings")
         settings_btn.setObjectName("SecondaryBtn")
@@ -218,11 +229,13 @@ class MainWindow(QMainWindow):
         if not getattr(self, "scraper_ready", False):
             self.ind_scan.setText("Scanner: Initializing...")
             self.ind_scan.setStyleSheet("font-weight: bold; color: #f59e0b;")
+            self.refresh_keyboard_indicator()
             return
 
         if self.scan_locked:
             self.ind_scan.setText("Scanner: Busy")
             self.ind_scan.setStyleSheet("font-weight: bold; color: #f59e0b;")
+            self.refresh_keyboard_indicator()
             return
 
         if self.qr_input.hasFocus():
@@ -232,6 +245,15 @@ class MainWindow(QMainWindow):
             self.ind_scan.setText("Scanner: Offline (Unfocused)")
             self.ind_scan.setStyleSheet("font-weight: bold; color: #f87171;")
             self.qr_input.setFocus()
+
+        if self.camera_thread and self.camera_thread.isRunning():
+            if time.monotonic() - self.last_camera_frame_ts > 10:
+                self.set_status("Camera stream stalled. Restarting camera...", "#f59e0b")
+                self.restart_camera()
+                self.refresh_keyboard_indicator()
+                return
+
+        self.refresh_keyboard_indicator()
 
     # --- Workflows ---
     def set_status(self, msg, color="#3b82f6"):
@@ -243,6 +265,47 @@ class MainWindow(QMainWindow):
         cursor = self.console.textCursor()
         cursor.movePosition(QTextCursor.End)
         self.console.setTextCursor(cursor)
+
+    def refresh_keyboard_indicator(self):
+        language = get_current_keyboard_language()
+        if language == "Thai":
+            self.keyboard_button.setText("Keyboard: Thai")
+            self.keyboard_button.setStyleSheet(
+                "QPushButton {"
+                "background-color: rgba(239, 68, 68, 0.18);"
+                "border: 1px solid rgba(248, 113, 113, 0.65);"
+                "color: #fecaca;"
+                "padding: 8px 14px;"
+                "border-radius: 6px;"
+                "font-weight: bold;"
+                "}"
+                "QPushButton:hover { background-color: rgba(239, 68, 68, 0.28); }"
+            )
+        elif language == "English":
+            self.keyboard_button.setText("Keyboard: English")
+            self.keyboard_button.setStyleSheet(
+                "QPushButton {"
+                "background-color: rgba(34, 197, 94, 0.16);"
+                "border: 1px solid rgba(74, 222, 128, 0.65);"
+                "color: #bbf7d0;"
+                "padding: 8px 14px;"
+                "border-radius: 6px;"
+                "font-weight: bold;"
+                "}"
+                "QPushButton:hover { background-color: rgba(34, 197, 94, 0.26); }"
+            )
+        else:
+            self.keyboard_button.setText(f"Keyboard: {language}")
+            self.keyboard_button.setStyleSheet(
+                "QPushButton {"
+                "background-color: rgba(100, 116, 139, 0.16);"
+                "border: 1px solid rgba(148, 163, 184, 0.55);"
+                "color: #e2e8f0;"
+                "padding: 8px 14px;"
+                "border-radius: 6px;"
+                "font-weight: bold;"
+                "}"
+            )
 
     def set_scan_lock(self, locked):
         self.scan_locked = locked
@@ -257,18 +320,28 @@ class MainWindow(QMainWindow):
 
         self.check_system_status()
 
+    def start_services(self):
+        self.start_camera()
+        self.start_scraper()
+
     def start_camera(self):
         if self.camera_thread:
             self.camera_thread.stop()
-        if self.scraper_thread:
-            self.scraper_thread.stop()
 
-        self.config = load_config()
+        self.last_camera_frame_ts = time.monotonic()
         idx = self.config.get("camera_index", 0)
-        self.camera_thread = CameraThread(camera_index=idx)
+        self.camera_thread = CameraThread(camera_index=idx, target_fps=15, preview_size=(960, 720))
         self.camera_thread.frame_ready.connect(self.update_video_frame)
         self.camera_thread.error_occurred.connect(self.on_camera_error)
         self.camera_thread.start()
+
+        self.ind_cam.setText("Camera: Online")
+        self.ind_cam.setStyleSheet("font-weight: bold; color: #4ade80;")
+        self.set_scan_lock(False)
+
+    def start_scraper(self):
+        if self.scraper_thread:
+            self.scraper_thread.stop()
 
         self.scraper_ready = False
         self.set_status("Initializing OCSC session... (Logging in)", "#f59e0b")
@@ -282,9 +355,55 @@ class MainWindow(QMainWindow):
         self.scraper_thread.error_occurred.connect(self.on_scraping_error)
         self.scraper_thread.start()
 
+    def restart_camera(self):
+        old_camera_index = self.config.get("camera_index", 0)
+        if self.camera_thread:
+            self.camera_thread.stop()
+
+        self.last_camera_frame_ts = time.monotonic()
+        self.camera_thread = CameraThread(camera_index=old_camera_index, target_fps=15, preview_size=(960, 720))
+        self.camera_thread.frame_ready.connect(self.update_video_frame)
+        self.camera_thread.error_occurred.connect(self.on_camera_error)
+        self.camera_thread.start()
+
         self.ind_cam.setText("Camera: Online")
         self.ind_cam.setStyleSheet("font-weight: bold; color: #4ade80;")
         self.set_scan_lock(False)
+
+    def show_keyboard_language_notice(self):
+        if self._keyboard_notice_shown:
+            return
+
+        self._keyboard_notice_shown = True
+        language = get_current_keyboard_language()
+        if language == "Thai":
+            QMessageBox.warning(
+                self,
+                "Keyboard Language Warning",
+                "Current keyboard language is Thai.\n\n"
+                "Please switch to English before scanning QR codes.\n"
+                "You can click the Keyboard button in the header to toggle it.",
+            )
+            self.add_history("Keyboard language detected: Thai")
+        else:
+            QMessageBox.information(
+                self,
+                "Keyboard Language",
+                f"Current keyboard language is {language}.\n\n"
+                "You can click the Keyboard button in the header to toggle it.",
+            )
+            self.add_history(f"Keyboard language detected: {language}")
+
+        self.refresh_keyboard_indicator()
+
+    def toggle_keyboard_layout(self):
+        if toggle_keyboard_language():
+            language = get_current_keyboard_language()
+            self.refresh_keyboard_indicator()
+            self.set_status(f"Keyboard language switched to {language}.", "#4ade80")
+            self.add_history(f"Keyboard language switched to {language}")
+        else:
+            QMessageBox.warning(self, "Keyboard Language", "Unable to change keyboard language on this machine.")
 
     def on_scraper_ready(self):
         self.scraper_ready = True
@@ -292,8 +411,11 @@ class MainWindow(QMainWindow):
         self.check_system_status()
 
     def update_video_frame(self, frame):
-        display_frame = cv2.resize(frame, (960, 720))
-        rgb_img = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+        if frame is None:
+            return
+
+        self.last_camera_frame_ts = time.monotonic()
+        rgb_img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_img.shape
         q_img = QImage(rgb_img.data, w, h, ch * w, QImage.Format_RGB888)
         self.cam_label.setPixmap(
@@ -306,13 +428,22 @@ class MainWindow(QMainWindow):
         self.set_status(f"Camera Error: {err_msg}", "#ef4444")
         self.scan_locked = True
         self.qr_input.setEnabled(False)
+        self.last_camera_frame_ts = 0.0
+        self.refresh_keyboard_indicator()
 
     def open_settings(self):
+        previous_camera_index = self.config.get("camera_index", 0)
         dlg = SettingsDialog(self)
         if dlg.exec():
-            self.start_camera()
             self.config = load_config()
+            if self.camera_thread:
+                self.camera_thread.camera_index = self.config.get("camera_index", 0)
+            if self.scraper_thread:
+                self.scraper_thread.timeout_sec = self.config.get("scraper_timeout_sec", 15)
             self.storage.output_dir = self.config["output_dir"]
+            if self.config.get("camera_index", 0) != previous_camera_index:
+                self.start_camera()
+            self.refresh_keyboard_indicator()
 
     def on_qr_scanned(self):
         national_id = self.qr_input.text().strip()
