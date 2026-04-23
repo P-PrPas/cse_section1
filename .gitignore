@@ -1,0 +1,38 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+.build-venv/
+
+# Build and packaging outputs
+build/
+dist/
+output/
+setup_output/
+ms-playwright/
+*.egg-info/
+pip-wheel-metadata/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+htmlcov/
+
+# Environment and local secrets
+.env
+.env.*
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/

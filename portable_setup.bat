@@ -21,6 +21,7 @@ if errorlevel 1 (
 echo.
 echo Portable setup package is ready in the output folder.
 echo Look for the ZIP file created by build.bat.
+if exist "output" start "" "output"
 pause
 
 endlocal

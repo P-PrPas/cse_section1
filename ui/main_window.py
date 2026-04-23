@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QTextEdit,
 )
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtMultimedia import QMediaDevices
 from PySide6.QtGui import QImage, QPixmap, QTextCursor
 
 from core.camera import CameraThread
@@ -324,18 +325,36 @@ class MainWindow(QMainWindow):
         self.start_camera()
         self.start_scraper()
 
+    def _resolve_camera_index(self):
+        desired_name = (self.config.get("camera_name") or "").strip()
+        desired_index = int(self.config.get("camera_index", 0))
+
+        if desired_name:
+            for idx, cam in enumerate(QMediaDevices.videoInputs()):
+                if (cam.description() or "").strip() == desired_name:
+                    return idx
+
+        return desired_index
+
     def start_camera(self):
         if self.camera_thread:
             self.camera_thread.stop()
 
         self.last_camera_frame_ts = time.monotonic()
-        idx = self.config.get("camera_index", 0)
+        idx = self._resolve_camera_index()
+        cameras = QMediaDevices.videoInputs()
+        camera_name = ""
+        if 0 <= idx < len(cameras):
+            camera_name = cameras[idx].description() or ""
+        if not camera_name:
+            camera_name = self.config.get("camera_name") or f"Index {idx}"
+
         self.camera_thread = CameraThread(camera_index=idx, target_fps=15, preview_size=(960, 720))
         self.camera_thread.frame_ready.connect(self.update_video_frame)
         self.camera_thread.error_occurred.connect(self.on_camera_error)
         self.camera_thread.start()
 
-        self.ind_cam.setText("Camera: Online")
+        self.ind_cam.setText(f"Camera: Online ({camera_name})")
         self.ind_cam.setStyleSheet("font-weight: bold; color: #4ade80;")
         self.set_scan_lock(False)
 
@@ -356,17 +375,24 @@ class MainWindow(QMainWindow):
         self.scraper_thread.start()
 
     def restart_camera(self):
-        old_camera_index = self.config.get("camera_index", 0)
         if self.camera_thread:
             self.camera_thread.stop()
 
         self.last_camera_frame_ts = time.monotonic()
-        self.camera_thread = CameraThread(camera_index=old_camera_index, target_fps=15, preview_size=(960, 720))
+        idx = self._resolve_camera_index()
+        cameras = QMediaDevices.videoInputs()
+        camera_name = ""
+        if 0 <= idx < len(cameras):
+            camera_name = cameras[idx].description() or ""
+        if not camera_name:
+            camera_name = self.config.get("camera_name") or f"Index {idx}"
+
+        self.camera_thread = CameraThread(camera_index=idx, target_fps=15, preview_size=(960, 720))
         self.camera_thread.frame_ready.connect(self.update_video_frame)
         self.camera_thread.error_occurred.connect(self.on_camera_error)
         self.camera_thread.start()
 
-        self.ind_cam.setText("Camera: Online")
+        self.ind_cam.setText(f"Camera: Online ({camera_name})")
         self.ind_cam.setStyleSheet("font-weight: bold; color: #4ade80;")
         self.set_scan_lock(False)
 
@@ -433,6 +459,7 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         previous_camera_index = self.config.get("camera_index", 0)
+        previous_camera_name = self.config.get("camera_name", "")
         dlg = SettingsDialog(self)
         if dlg.exec():
             self.config = load_config()
@@ -441,7 +468,10 @@ class MainWindow(QMainWindow):
             if self.scraper_thread:
                 self.scraper_thread.timeout_sec = self.config.get("scraper_timeout_sec", 15)
             self.storage.output_dir = self.config["output_dir"]
-            if self.config.get("camera_index", 0) != previous_camera_index:
+            if (
+                self.config.get("camera_index", 0) != previous_camera_index
+                or self.config.get("camera_name", "") != previous_camera_name
+            ):
                 self.start_camera()
             self.refresh_keyboard_indicator()
 

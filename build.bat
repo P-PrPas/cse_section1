@@ -5,7 +5,7 @@ echo Starting portable runtime build for Exam Registration System...
 
 set APP_NAME=ExamRegistrationSystem
 set APP_VERSION=1.0.0
-set OUTPUT_DIR=output\%APP_NAME%_Portable_%APP_VERSION%
+set OUTPUT_DIR=setup_output\%APP_NAME%_Portable_%APP_VERSION%
 set ZIP_FILE=%OUTPUT_DIR%.zip
 set OUTPUT_DIR_ABS=%CD%\%OUTPUT_DIR%
 set ZIP_FILE_ABS=%CD%\%ZIP_FILE%
@@ -177,6 +177,13 @@ echo set PYTHONPATH=%%~dp0;%%PY_HOME%%\Lib;%%PY_HOME%%\Lib\site-packages >> "%OU
 echo set PLAYWRIGHT_BROWSERS_PATH=%%~dp0ms-playwright >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
 echo start "" "%%PY_HOME%%\pythonw.exe" "%%~dp0main.py" >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
 
+echo Creating start here launcher...
+echo @echo off > "%OUTPUT_DIR%\StartHere.bat"
+echo setlocal >> "%OUTPUT_DIR%\StartHere.bat"
+echo cd /d "%%~dp0" >> "%OUTPUT_DIR%\StartHere.bat"
+echo call "Run_%APP_NAME%.bat" >> "%OUTPUT_DIR%\StartHere.bat"
+echo endlocal >> "%OUTPUT_DIR%\StartHere.bat"
+
 echo Creating console launcher...
 echo @echo off > "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
 echo setlocal >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
@@ -195,11 +202,10 @@ echo This package includes Python runtime, application source code, and Playwrig
 echo. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
 echo How to use: >> "%OUTPUT_DIR%\README_PORTABLE.txt"
 echo 1. Extract this ZIP to a normal folder. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo 2. Run Run_%APP_NAME%.bat >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo 3. If you need logs in a console window, run Run_%APP_NAME%_Console.bat >> "%OUTPUT_DIR%\README_PORTABLE.txt"
+echo 2. Run StartHere.bat for the normal launch flow. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
+echo 3. If you need logs in a console window, run Run_%APP_NAME%_Console.bat. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
 echo. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo Do not run directly from ZIP. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo Do not move files out of this folder. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
+echo Important: keep all extracted files together in the same folder. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
 
 echo Creating ZIP...
 if exist "%ZIP_FILE%" del "%ZIP_FILE%"
