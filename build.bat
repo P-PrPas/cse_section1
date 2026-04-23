@@ -1,237 +1,169 @@
 @echo off
 setlocal enabledelayedexpansion
 
-echo Starting portable runtime build for Exam Registration System...
+pushd "%~dp0"
 
-set APP_NAME=ExamRegistrationSystem
-set APP_VERSION=1.0.0
-set OUTPUT_DIR=setup_output\%APP_NAME%_Portable_%APP_VERSION%
-set ZIP_FILE=%OUTPUT_DIR%.zip
-set OUTPUT_DIR_ABS=%CD%\%OUTPUT_DIR%
-set ZIP_FILE_ABS=%CD%\%ZIP_FILE%
-set BUILD_VENV=.build-venv
-set BROWSERS_PATH=%CD%\ms-playwright
+echo =========================================
+echo ExamRegistrationSystem Build Script
+echo =========================================
 
-set BASE_PYTHON=
-set BASE_PYTHON_DIR=
+set "APP_NAME=ExamRegistrationSystem"
+set "APP_VERSION=1.0.0"
+set "OUTPUT_DIR=%CD%\setup_output"
+set "PORTABLE_ROOT=%OUTPUT_DIR%\%APP_NAME%_Portable_%APP_VERSION%"
+set "PORTABLE_APP_DIR=%PORTABLE_ROOT%\%APP_NAME%"
+set "PORTABLE_ZIP=%OUTPUT_DIR%\%APP_NAME%_Portable_%APP_VERSION%.zip"
+set "PYTHON_EXE="
+set "PLAYWRIGHT_BROWSERS_DIR=%LOCALAPPDATA%\ms-playwright"
+set "PLAYWRIGHT_STAGE_DIR=%CD%\build_assets\ms-playwright"
 
-for /d %%d in ("%LOCALAPPDATA%\Programs\Python\Python*") do (
-    if exist "%%d\python.exe" (
-        set BASE_PYTHON=%%d\python.exe
-        goto :found_python
+REM --- Find Python ---
+for %%I in (
+    "%LOCALAPPDATA%\Programs\Python\Python312"
+    "%LOCALAPPDATA%\Programs\Python\Python313"
+    "%LOCALAPPDATA%\Programs\Python\Python311"
+    "%LOCALAPPDATA%\Programs\Python\Python310"
+) do (
+    if exist "%%~fI\python.exe" if not defined PYTHON_EXE set "PYTHON_EXE=%%~fI\python.exe"
+)
+
+if not defined PYTHON_EXE (
+    for /f "delims=" %%I in ('where python.exe 2^>nul') do (
+        if not defined PYTHON_EXE set "PYTHON_EXE=%%I"
     )
 )
 
-if "%BASE_PYTHON%"=="" if exist "%CD%\venv\Scripts\python.exe" (
-    "%CD%\venv\Scripts\python.exe" -c "import sys" >nul 2>nul
-    if not errorlevel 1 (
-        set BASE_PYTHON=%CD%\venv\Scripts\python.exe
-    )
+if not defined PYTHON_EXE (
+    echo ERROR: python.exe not found.
+    echo Install Python 3.12+ first, then run this script again.
+    popd
+    pause
+    exit /b 1
 )
 
-:found_python
-if "%BASE_PYTHON%"=="" (
-    echo Error: Python executable not found.
-    goto :error
-)
+echo Using Python: %PYTHON_EXE%
 
-set BASE_PREFIX_FILE=%TEMP%\%APP_NAME%_base_prefix.txt
-if exist "%BASE_PREFIX_FILE%" del /q "%BASE_PREFIX_FILE%"
-"%BASE_PYTHON%" -c "import sys, pathlib; pathlib.Path(r'%BASE_PREFIX_FILE%').write_text(sys.base_prefix, encoding='utf-8')"
+REM --- Check dependencies ---
+echo.
+echo 1. Checking dependencies...
+"%PYTHON_EXE%" -c "import PySide6, cv2, playwright, dotenv, PyInstaller" >nul 2>nul
 if errorlevel 1 (
-    echo Error: Failed to query base Python directory.
-    goto :error
-)
-set /p BASE_PYTHON_DIR=<"%BASE_PREFIX_FILE%"
-if exist "%BASE_PREFIX_FILE%" del /q "%BASE_PREFIX_FILE%"
-if not defined BASE_PYTHON_DIR (
-    echo Error: Failed to resolve base Python directory.
-    goto :error
+    echo Required packages missing. Installing from requirements.txt...
+    "%PYTHON_EXE%" -m pip install -r requirements.txt pyinstaller
+    if errorlevel 1 goto :build_failed
 )
 
-echo Using base Python: %BASE_PYTHON%
-echo Using base Python dir: %BASE_PYTHON_DIR%
+REM --- Clean old builds ---
+echo.
+echo 2. Cleaning old builds...
+rmdir /s /q build dist 2>nul
+rmdir /s /q build_assets 2>nul
+if exist "%PORTABLE_ROOT%" rmdir /s /q "%PORTABLE_ROOT%"
+if exist "%PORTABLE_ZIP%" del /q "%PORTABLE_ZIP%"
 
-if not exist "%BUILD_VENV%\Scripts\python.exe" (
-    echo Creating build virtualenv...
-    call "%BASE_PYTHON%" -m venv "%BUILD_VENV%"
-    if errorlevel 1 (
-        echo Error: Failed to create build virtualenv.
-        goto :error
-    )
+REM --- Validate Playwright Chromium ---
+echo.
+echo 3. Validating Playwright Chromium bundle...
+echo Using: %PLAYWRIGHT_BROWSERS_DIR%
+if not exist "%PLAYWRIGHT_BROWSERS_DIR%" (
+    echo ERROR: Playwright browser files not found in "%PLAYWRIGHT_BROWSERS_DIR%".
+    echo Run "playwright install chromium" on the build machine first.
+    goto :build_failed
 )
 
-set PYTHON_EXE=%CD%\%BUILD_VENV%\Scripts\python.exe
-"%PYTHON_EXE%" -c "import sys" >nul 2>nul
+set "PLAYWRIGHT_BROWSERS_PATH=%PLAYWRIGHT_BROWSERS_DIR%"
+"%PYTHON_EXE%" -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(headless=True); b.close(); p.stop(); print('Playwright Chromium smoke test passed.')"
 if errorlevel 1 (
-    echo Error: Build virtualenv is invalid.
-    goto :error
+    echo ERROR: Playwright Chromium launch test failed.
+    echo Reinstall the browser bundle with: python -m playwright install chromium
+    goto :build_failed
 )
 
-echo Using build Python: %PYTHON_EXE%
+REM --- Stage Playwright browsers ---
+echo.
+echo 4. Staging Playwright browser files...
+robocopy "%PLAYWRIGHT_BROWSERS_DIR%" "%PLAYWRIGHT_STAGE_DIR%" /MIR /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 (
+    echo ERROR: Failed to copy Playwright browser files into staging.
+    goto :build_failed
+)
 
-echo Installing dependencies...
-"%PYTHON_EXE%" -m pip install --no-cache-dir --upgrade pip
+REM --- Build with PyInstaller ---
+echo.
+echo 5. Building executable with PyInstaller...
+echo This may take a few minutes...
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --onedir --windowed ^
+    --name "%APP_NAME%" ^
+    --collect-all playwright ^
+    --collect-all greenlet ^
+    --add-data "config.json:." ^
+    --add-data "%PLAYWRIGHT_STAGE_DIR%:ms-playwright" ^
+    main.py
+if errorlevel 1 goto :build_failed
+
+if not exist "dist\%APP_NAME%\%APP_NAME%.exe" (
+    echo ERROR: Executable not found after PyInstaller build.
+    goto :build_failed
+)
+
+REM --- Package portable release ---
+echo.
+echo 6. Packaging portable release...
+if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
+mkdir "%PORTABLE_ROOT%"
+robocopy "dist\%APP_NAME%" "%PORTABLE_APP_DIR%" /MIR /NFL /NDL /NJH /NJS /NP >nul
+if errorlevel 8 (
+    echo ERROR: Failed to stage portable application files.
+    goto :build_failed
+)
+
+if exist ".env" copy /y ".env" "%PORTABLE_APP_DIR%\" >nul
+
+(
+echo @echo off
+echo pushd "%%~dp0%APP_NAME%"
+echo start "" "%APP_NAME%.exe"
+echo popd
+) > "%PORTABLE_ROOT%\StartHere.bat"
+
+(
+echo %APP_NAME% Portable Package v%APP_VERSION%
+echo ==================================================
+echo 1. Extract this ZIP to a normal folder on the client machine.
+echo 2. Open the extracted folder.
+echo 3. Double-click StartHere.bat to launch the application.
+echo 4. Do NOT run the application from inside the ZIP viewer.
+echo.
+echo Notes:
+echo - No Python installation required on the client machine.
+echo - Keep the %APP_NAME% folder structure unchanged.
+echo - The output folder will be created automatically next to the exe.
+) > "%PORTABLE_ROOT%\README_PORTABLE.txt"
+
+REM --- Create ZIP ---
+echo.
+echo 7. Creating ZIP...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path '%PORTABLE_ROOT%\*' -DestinationPath '%PORTABLE_ZIP%' -Force"
 if errorlevel 1 (
-    echo Error: Failed to upgrade pip.
-    goto :error
-)
-
-"%PYTHON_EXE%" -m pip install --no-cache-dir -r requirements.txt
-if errorlevel 1 (
-    echo Error: Failed to install dependencies.
-    goto :error
-)
-
-"%PYTHON_EXE%" -c "import PySide6, cv2, playwright, dotenv" >nul 2>nul
-if errorlevel 1 (
-    echo Error: Missing dependencies required for runtime package.
-    goto :error
-)
-
-if exist output rmdir /s /q output
-mkdir output
-
-set PLAYWRIGHT_BROWSERS_PATH=%BROWSERS_PATH%
-"%PYTHON_EXE%" -m playwright install chromium
-if errorlevel 1 (
-    echo Error: Failed to install Playwright Chromium.
-    goto :error
-)
-
-if not exist "%BROWSERS_PATH%" (
-    echo Error: Playwright browsers not found.
-    goto :error
-)
-
-echo Smoke testing Playwright in non-frozen mode...
-set PLAYWRIGHT_BROWSERS_PATH=%BROWSERS_PATH%
-"%PYTHON_EXE%" -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(headless=True); b.close(); p.stop()"
-if errorlevel 1 (
-    echo Error: Playwright smoke test failed.
-    goto :error
-)
-
-echo Creating portable runtime package...
-mkdir "%OUTPUT_DIR%"
-mkdir "%OUTPUT_DIR%\python"
-mkdir "%OUTPUT_DIR%\python\Lib"
-mkdir "%OUTPUT_DIR%\python\Lib\site-packages"
-
-echo Copying application source...
-xcopy "%CD%\core" "%OUTPUT_DIR%\core\" /e /i /h /y >nul
-xcopy "%CD%\ui" "%OUTPUT_DIR%\ui\" /e /i /h /y >nul
-xcopy "%CD%\utils" "%OUTPUT_DIR%\utils\" /e /i /h /y >nul
-copy /y "%CD%\main.py" "%OUTPUT_DIR%\" >nul
-copy /y "%CD%\config.json" "%OUTPUT_DIR%\" >nul
-if exist "%CD%\pdf_qr.png" copy /y "%CD%\pdf_qr.png" "%OUTPUT_DIR%\" >nul
-if exist "%CD%\qr_code_gen.py" copy /y "%CD%\qr_code_gen.py" "%OUTPUT_DIR%\" >nul
-
-echo Copying bundled Python runtime...
-xcopy "%BASE_PYTHON_DIR%\*" "%OUTPUT_DIR%\python\" /e /i /h /y >nul
-if errorlevel 1 (
-    echo Error: Failed to copy base Python runtime.
-    goto :error
-)
-
-if exist "%BASE_PYTHON_DIR%\pyvenv.cfg" (
-    copy /y "%BASE_PYTHON_DIR%\pyvenv.cfg" "%OUTPUT_DIR%\python\" >nul
-)
-
-if not exist "%OUTPUT_DIR%\python\pyvenv.cfg" (
-    (
-        echo home = %BASE_PYTHON_DIR%
-        echo include-system-site-packages = false
-        echo version = 3.12
-    ) > "%OUTPUT_DIR%\python\pyvenv.cfg"
-)
-
-echo Copying installed packages...
-xcopy "%CD%\%BUILD_VENV%\Lib\site-packages\*" "%OUTPUT_DIR%\python\Lib\site-packages\" /e /i /h /y >nul
-if errorlevel 1 (
-    echo Error: Failed to copy Python packages.
-    goto :error
-)
-
-echo Copying Playwright browsers...
-xcopy "%BROWSERS_PATH%\*" "%OUTPUT_DIR%\ms-playwright\" /e /i /h /y >nul
-if errorlevel 1 (
-    echo Error: Failed to copy Playwright browsers.
-    goto :error
-)
-
-dir /b "%OUTPUT_DIR%\ms-playwright\chromium-*" >nul 2>nul
-if errorlevel 1 (
-    echo Error: Chromium bundle not found in portable package.
-    goto :error
-)
-
-echo Creating launcher...
-echo @echo off > "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-echo setlocal >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-echo cd /d "%%~dp0" >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-echo set PY_HOME=%%~dp0python >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-echo set PATH=%%PY_HOME%%;%%PY_HOME%%\Scripts;%%PATH%% >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-echo set PYTHONHOME=%%PY_HOME%% >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-echo set PYTHONPATH=%%~dp0;%%PY_HOME%%\Lib;%%PY_HOME%%\Lib\site-packages >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-echo set PLAYWRIGHT_BROWSERS_PATH=%%~dp0ms-playwright >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-echo start "" "%%PY_HOME%%\pythonw.exe" "%%~dp0main.py" >> "%OUTPUT_DIR%\Run_%APP_NAME%.bat"
-
-echo Creating start here launcher...
-echo @echo off > "%OUTPUT_DIR%\StartHere.bat"
-echo setlocal >> "%OUTPUT_DIR%\StartHere.bat"
-echo cd /d "%%~dp0" >> "%OUTPUT_DIR%\StartHere.bat"
-echo call "Run_%APP_NAME%.bat" >> "%OUTPUT_DIR%\StartHere.bat"
-echo endlocal >> "%OUTPUT_DIR%\StartHere.bat"
-
-echo Creating console launcher...
-echo @echo off > "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-echo setlocal >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-echo cd /d "%%~dp0" >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-echo set PY_HOME=%%~dp0python >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-echo set PATH=%%PY_HOME%%;%%PY_HOME%%\Scripts;%%PATH%% >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-echo set PYTHONHOME=%%PY_HOME%% >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-echo set PYTHONPATH=%%~dp0;%%PY_HOME%%\Lib;%%PY_HOME%%\Lib\site-packages >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-echo set PLAYWRIGHT_BROWSERS_PATH=%%~dp0ms-playwright >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-echo "%%PY_HOME%%\python.exe" "%%~dp0main.py" >> "%OUTPUT_DIR%\Run_%APP_NAME%_Console.bat"
-
-echo Creating README...
-echo Exam Registration System Portable Runtime %APP_VERSION% > "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo This package includes Python runtime, application source code, and Playwright Chromium. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo How to use: >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo 1. Extract this ZIP to a normal folder. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo 2. Run StartHere.bat for the normal launch flow. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo 3. If you need logs in a console window, run Run_%APP_NAME%_Console.bat. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-echo Important: keep all extracted files together in the same folder. >> "%OUTPUT_DIR%\README_PORTABLE.txt"
-
-echo Creating ZIP...
-if exist "%ZIP_FILE%" del "%ZIP_FILE%"
-where tar.exe >nul 2>nul
-if not errorlevel 1 (
-    tar.exe -a -c -f "%ZIP_FILE_ABS%" -C "%OUTPUT_DIR_ABS%" .
-)
-
-if not exist "%ZIP_FILE%" (
-    powershell -NoProfile -Command "Compress-Archive -Path '%OUTPUT_DIR_ABS%\*' -DestinationPath '%ZIP_FILE_ABS%' -Force"
-)
-
-if not exist "%ZIP_FILE%" (
-    echo Error: ZIP creation failed.
-    goto :error
+    echo ERROR: Failed to create portable ZIP package.
+    goto :build_failed
 )
 
 echo.
-echo Portable runtime build completed successfully.
-echo Portable folder: %OUTPUT_DIR%
-echo ZIP file: %ZIP_FILE%
-goto :end
+echo =========================================
+echo Build complete!
+echo Portable folder: %PORTABLE_ROOT%
+echo Portable ZIP:    %PORTABLE_ZIP%
+echo =========================================
+popd
+pause
+exit /b 0
 
-:error
-echo Build failed.
+:build_failed
+echo.
+echo =========================================
+echo Build failed. Check the error messages above.
+echo =========================================
+popd
+pause
 exit /b 1
-
-:end
-endlocal

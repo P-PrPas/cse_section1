@@ -1,6 +1,4 @@
 PySide6
 opencv-python
 playwright
-paddleocr
-paddlepaddle
 python-dotenv

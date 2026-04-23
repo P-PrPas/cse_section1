@@ -1,14 +1,25 @@
+import sys
+import os
+
+# When running as a frozen PyInstaller bundle, point playwright to the bundled browsers
+if getattr(sys, 'frozen', False):
+    _exe_dir = os.path.dirname(sys.executable)
+    _pw_path = os.path.join(_exe_dir, 'ms-playwright')
+    if os.path.isdir(_pw_path):
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = _pw_path
+
 from PySide6.QtCore import QThread, Signal
 from playwright.sync_api import sync_playwright
 import numpy as np
 import cv2
 import queue
-import os
 import traceback
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+if getattr(sys, 'frozen', False):
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(sys.executable), '.env'))
+else:
+    load_dotenv()
 
 class ScraperThread(QThread):
     finished = Signal(np.ndarray)  # Emits the screenshot as CV2 array
