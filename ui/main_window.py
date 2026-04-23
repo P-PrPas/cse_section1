@@ -21,7 +21,11 @@ from core.camera import CameraThread
 from core.scraper import ScraperThread
 from core.storage import StorageManager
 from utils.config import load_config
-from utils.keyboard_layout import get_current_keyboard_language, toggle_keyboard_language
+from utils.keyboard_layout import (
+    get_current_keyboard_language,
+    normalize_scanned_national_id,
+    toggle_keyboard_language,
+)
 from ui.settings_dialog import SettingsDialog
 from ui.override_modal import OverrideModal
 
@@ -476,10 +480,14 @@ class MainWindow(QMainWindow):
             self.refresh_keyboard_indicator()
 
     def on_qr_scanned(self):
-        national_id = self.qr_input.text().strip()
+        raw_input = self.qr_input.text().strip()
+        national_id = normalize_scanned_national_id(raw_input)
         self.qr_input.clear()
         if not national_id:
             return
+
+        if raw_input != national_id:
+            self.add_history(f"Normalized QR input: {raw_input} -> {national_id}")
 
         if self.scan_locked:
             self.set_status(

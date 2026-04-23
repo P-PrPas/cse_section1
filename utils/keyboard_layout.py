@@ -12,6 +12,30 @@ if IS_WINDOWS:
         0x0409: "English",
         0x0411: "Thai",
     }
+    _THAI_QWERTY_DIGIT_MAP = str.maketrans({
+        "ๅ": "1",
+        "/": "2",
+        "-": "3",
+        "ภ": "4",
+        "ถ": "5",
+        "ุ": "6",
+        "ึ": "7",
+        "ค": "8",
+        "ต": "9",
+        "จ": "0",
+        "๐": "0",
+        "๑": "1",
+        "๒": "2",
+        "๓": "3",
+        "๔": "4",
+        "๕": "5",
+        "๖": "6",
+        "๗": "7",
+        "๘": "8",
+        "๙": "9",
+    })
+else:
+    _THAI_QWERTY_DIGIT_MAP = str.maketrans({})
 
 
 def _lang_id_from_hkl(hkl):
@@ -62,3 +86,11 @@ def toggle_keyboard_language():
     current = get_current_keyboard_language()
     target = "Thai" if current != "Thai" else "English"
     return set_keyboard_language(target)
+
+
+def normalize_scanned_national_id(text):
+    if not text:
+        return ""
+
+    translated = str(text).translate(_THAI_QWERTY_DIGIT_MAP)
+    return "".join(ch for ch in translated if ch.isdigit())
